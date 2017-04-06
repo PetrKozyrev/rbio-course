@@ -56,7 +56,9 @@ conditions <- conditions[rownames(conditions)!="treg_NBP_patient3",]
 clustering <- Kmeans(log_expression, 6, method="correlation", iter.max=20000)
 head(clustering$cluster)
 
-to_visualise <- log_expression[order(clustering$cluster), order(conditions[, 2])]
+to_visualise <- log_expression[order(clustering$cluster), order(conditions[, 2], conditions[, 1])]
+
+
 
 to_visualise <- t(apply(to_visualise, 1, function(r) {
   (r - min(r)) / (max(r) - min(r))
