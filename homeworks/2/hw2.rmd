@@ -1,0 +1,79 @@
+---
+title: "clustering homework"
+author: "Petr Kozyrev"
+date: "April 6, 2017"
+output: html_document
+---
+
+```{r setup, message=FALSE}
+library(DESeq2)
+library(ggplot2)
+library(pheatmap)
+library(amap)
+library(dbscan)
+options(width=120)
+```
+
+## Файлы
+
+```{r load}
+counts <- read.csv("GSE89225_Illumina_counts.csv", row.names=1)
+conditions <- read.csv("conditions.csv", row.names=1)
+mart <- read.table("human_mart.txt", sep="\t", header=1, check.names = F)
+```
+
+
+### Задание 1: иерархическая кластеризация
+
+```{r hier, cache=TRUE, message=FALSE}
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = conditions,
+                              design = ~ tissue + cells)
+dds <- dds[order(rowSums(counts(dds)), decreasing = T), ]
+dds <- dds[1:8000,]
+dds <- DESeq(dds)
+
+log_expression <- assay(rlog(dds))
+sample_corr <- cor(log_expression)
+rev_sample_corr <- 1 - sample_corr
+distances <- dist(rev_sample_corr)
+
+clust1 <- hclust(distances, method = 'average')
+clust2 <- hclust(distances, method = 'complete')
+clust3 <- hclust(distances, method = 'single')
+plot(clust1)
+plot(clust2)
+plot(clust3)
+
+```
+
+### Задание 2: K-means
+
+```{r k-means, cache=TRUE, message=FALSE}
+clustering <- Kmeans(log_expression, 6, method="correlation", iter.max=20000)
+head(clustering$cluster)
+
+to_visualise <- log_expression[order(clustering$cluster), order(conditions[, 2])]
+
+to_visualise <- t(apply(to_visualise, 1, function(r) {
+  (r - min(r)) / (max(r) - min(r))
+}))
+
+pheatmap(to_visualise, 
+         show_rownames = F, cluster_rows = F,
+         cluster_cols=F,
+         annotation_col = conditions)
+```
+
+### Density based algortihms
+
+```{r dba, cache=TRUE, message=FALSE}
+projections <- read.csv("projection2.csv", row.names=1)
+
+plot(projections)
+
+res.db <- dbscan(projections, 3, 20)
+
+plot(TSNE.2 ~ TSNE.1, data = projections, col = res.db$cluster)
+```
+
