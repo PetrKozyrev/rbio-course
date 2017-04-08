@@ -1,0 +1,203 @@
+---
+title: "kontrolnaya"
+author: "Petr Kozyrev"
+date: "April 8, 2017"
+output: html_document
+---
+
+
+
+## Библиотеки
+
+```{r setup, message=FALSE}
+library(DESeq2)
+library(ggplot2)
+library(pheatmap)
+library(amap)
+library(VennDiagram)
+options(width=120)
+```
+
+## Файлы
+
+```{r load}
+counts <- read.csv("~/bioinformatics/ib/R/rbio-course/homeworks/cw1/GSE89633_counts.tsv", row.names=1, sep="\t")
+head(counts)
+
+conditions <- read.csv("~/bioinformatics/ib/R/rbio-course/homeworks/cw1/GSE89633_conditions.tsv", row.names=1, sep="\t")
+head(conditions)
+```
+### 2.2.1 Visual quality control and self-consistence
+
+## PCA
+```{r deseq_prep, cache=TRUE, message=FALSE}
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = conditions,
+                              design = ~ conditions + cells)
+dds <- dds[rowSums(counts(dds)) > 20, ]
+dds <- DESeq(dds)
+vst_dds <- vst(dds)
+counts.norm <- assay(vst_dds)
+```
+
+
+```{r PCA}
+pca_data <- prcomp(t(counts.norm))
+percents <- pca_data$sdev^2 / sum(pca_data$sdev^2)
+to_plot <- t(counts.norm) %*% pca_data$rotation
+
+
+gdata <- data.frame(
+  x=to_plot[, 1],
+  y=to_plot[, 2],
+  conditions=conditions[, 2],
+  cells=conditions[, 1],
+  name=rownames(conditions)
+)
+
+ggplot(data=gdata, aes(x=x, y=y, color=cells, shape=conditions, label=name)) +
+  geom_point(size=3) + theme_bw()  +
+  xlab(paste0("PC", 1, ": ", formatC(100 * percents[1], digits=4), "%")) +
+  ylab(paste0("PC", 2, ": ", formatC(100 * percents[2], digits=4), "%"))
+
+
+```
+
+
+## Kmeans
+```{r k-means, cache=TRUE, message=FALSE}
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = conditions,
+                              design = ~ conditions + cells)
+dds <- dds[order(rowSums(counts(dds)), decreasing = T), ]
+dds <- dds[1:8000,]
+dds <- DESeq(dds)
+
+log_expression <- assay(rlog(dds))
+
+clustering <- Kmeans(log_expression, 10, method="correlation", iter.max=20000)
+
+to_visualise <- log_expression[order(clustering$cluster), order(conditions[, 2], conditions[, 1])]
+
+to_visualise <- t(apply(to_visualise, 1, function(r) {
+  (r - min(r)) / (max(r) - min(r))
+}))
+
+clusters <- data.frame(cluster = factor(clustering$cluster))
+
+pheatmap(to_visualise, 
+         show_rownames = F, cluster_rows = F,
+         cluster_cols=F,
+         annotation_col = conditions, annotation_row = clusters)
+
+```
+
+## Ответы на вопросы
+1. Нет, мы не можем сказать по этим двум графикам, что в датасете есть явные аутлаеры.
+2. Большая часть вариации объясняется различными клеточными типами.
+
+### 2.2.1 Differential expression
+
+```{r diff_exp1}
+FB_conditions <- conditions[conditions$cells == "cell type: FB",]
+FB_counts <- counts[, rownames(FB_conditions)]
+
+FAP_conditions <- conditions[conditions$cells == "cell type: FAP",]
+FAP_counts <- counts[, rownames(FAP_conditions)]
+
+SMP_conditions <- conditions[conditions$cells == "cell type: SMP",]
+SMP_counts <- counts[, rownames(SMP_conditions)]
+
+```
+
+
+```{r diff_exp2}
+
+ddsFB <- DESeqDataSetFromMatrix(countData = FB_counts,
+                              colData = FB_conditions,
+                              design = ~ conditions)
+ddsFB <- ddsFB[rowSums(counts(ddsFB)) > 20, ]
+ddsFB <- DESeq(ddsFB)
+
+ddsFAP <- DESeqDataSetFromMatrix(countData = FAP_counts,
+                              colData = FAP_conditions,
+                              design = ~ conditions)
+ddsFAP <- ddsFAP[rowSums(counts(ddsFAP)) > 20, ]
+ddsFAP <- DESeq(ddsFAP)
+
+ddsSMP <- DESeqDataSetFromMatrix(countData = SMP_counts,
+                              colData = SMP_conditions,
+                              design = ~ conditions)
+ddsSMP <- ddsSMP[rowSums(counts(ddsSMP)) > 20, ]
+ddsSMP <- DESeq(ddsSMP)
+```
+
+
+```{r diff_exp3}
+
+resFB <- results(ddsFB)
+resFAP <- results(ddsFAP)
+resSMP <- results(ddsSMP)
+
+```
+
+```{r diff_exp_volcano}
+gdataFB <- data.frame(
+  x=resFB$log2FoldChange,
+  y=-log10(resFB$padj),
+  state="FB WT vs FB DKO"
+)
+
+gdataFAP <- data.frame(
+  x = resFAP$log2FoldChange,
+  y=-log10(resFAP$padj),
+  state=" FAP WT vs FAP DKO"
+)
+
+gdataSMP <- data.frame(
+  x = resSMP$log2FoldChange,
+  y=-log10(resSMP$padj),
+  state=" SMP WT vs SMP DKO"
+)
+
+new_gdata <- rbind(gdataFB, gdataFAP, gdataSMP)
+
+ggplot(data=new_gdata, aes(x=x, y=y)) +
+  geom_point(size=1, aes(colour = cut(y, c(-Inf, 2, Inf))), na.omit(new_gdata)) + theme_bw()  +
+  xlab("Log fold change") +
+  ylab("Adjusted p.value") +
+  geom_hline(yintercept = 2, col="red", linetype="dashed") +
+  scale_color_manual(name = "significant",
+                     values = c("(-Inf,2]" = "black",
+                                  "(2, Inf]" = "red"),
+                     labels = c("Significant", "Not significant")) +
+  facet_grid(. ~ state)
+```
+
+
+```{r Vien diagram}
+first_set <- resFB[complete.cases(resFB[, "padj"]),]
+first_set <- first_set[first_set$padj < 0.01,]
+first_set <- rownames(first_set)
+
+second_set <- resFAP[complete.cases(resFAP[, "padj"]),]
+second_set <- second_set[second_set$padj < 0.01,]
+second_set <- rownames(second_set)
+
+third_set <- resSMP[complete.cases(resSMP[, "padj"]),]
+third_set <- third_set[third_set$padj < 0.01,]
+third_set <- rownames(third_set)
+
+first_second <- intersect(first_set, second_set)
+first_third <- intersect(first_set, third_set)
+second_third <- intersect(second_set, third_set)
+commonGenes <- intersect(first_second, third_set)
+
+venn.plot <- draw.triple.venn(length(first_set), length(second_set), length(third_set), n123=length(commonGenes), n12=length(first_second), n13=length(first_third), n23=length(second_third), category = c("FB", "FAP", "SMP"))
+
+grid.draw(venn.plot)
+grid.newpage()
+```
+
+## Ответы на вопросы
+Выглядит так, что в клетках типа FB транскрипционное состояние после нокаута изменилось сильнее (больше диф. экспрессированных генов), по сравнению с FAP и SMP.
