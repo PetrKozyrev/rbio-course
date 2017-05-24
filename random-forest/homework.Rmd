@@ -1,0 +1,296 @@
+---
+title: "random_forest"
+author: "Petr Kozyrev"
+date: "May 20, 2017"
+output: html_document
+---
+
+
+### Библиотеки
+```{r warning=FALSE}
+library(dplyr)
+library(randomForest)
+library(ggplot2)
+```
+
+### Данные
+```{r}
+ages <- read.table("ages.tsv", sep="\t", header=1)
+head(ages)
+
+methylation <- read.table("methylation.tsv", sep="\t", header=1, row.names = 1, na.strings = "NA")
+print(methylation[1:5, 1:5])
+```
+
+### Предподготовка данных
+```{r}
+# убираю NA
+methylation[, 4:ncol(methylation)]<- as.data.frame(apply(methylation[4:ncol(methylation)], 2, FUN=
+                                                           function(x) ifelse(is.na(x), 0, x)))
+
+# выбираю только самые скоррелированные сайты в датафрейме methylation
+sites <- nrow(methylation)
+cor_values <- data.frame(correlation=rep(0, sites), row_number=rep(0, sites))
+сorrelation <- numeric()
+row_number <- numeric()
+
+for(i in 1:95){
+  сorrelation <- c(сorrelation, abs(cor(as.numeric(methylation[i, 4:ncol(methylation)]), ages$Age)))
+  row_number <- c(row_number, i)
+}
+
+cor_values$correlation <- сorrelation
+cor_values$row_number <- row_number
+most_correlated <- arrange(cor_values, desc(correlation))[2][1:10, ]
+
+top10_methylation <- methylation[most_correlated, ]
+top10_methylation
+```
+### Предподготовка данных2
+```{r}
+set.seed(2)
+
+training <- sample(1:50, 40)
+validation <- (1:50)[-training]
+
+training <- training+3
+validation <- validation+3
+
+
+train <- top10_methylation[, c(1:3, training)]
+valid <- top10_methylation[, c(1:3, validation)]
+
+```
+
+### Функция-обертка
+```{r}
+wrapper <- function(train.data, train.response,
+                    test.data, test.response, 
+                    runs.number=50, ...) {
+  cycles <- 0
+  RMSE_train <- 0
+  RMSE_test <- 0
+  
+  while(cycles < runs.number){
+  fit.rf_train <- randomForest(age ~ .,
+                       data=train.data,
+                       importance=T,
+                       keep.forest = T,
+                       keep.inbag = T, ...)
+  
+  cycles <- cycles + 1
+  
+  prediction_train <- predict(fit.rf_train, train.data)
+  RMSE_train <- RMSE_train + sqrt(mean((prediction_train - train.response)^2))
+  
+  prediction_test <- predict(fit.rf_train, test.data)
+  RMSE_test <- RMSE_test + sqrt(mean((prediction_test - test.response)^2))
+  
+  }
+  return(c(RMSE_train/cycles, RMSE_test/cycles))
+}
+
+
+```
+
+### Приведу train и valid к нужному виду
+
+```{r}
+#train
+new_train <- as.data.frame(t(as.matrix(train)))
+new_train <- new_train[-c(1:3),]
+
+training <- training-3
+new_train$age <- ages[training, "Age"]
+
+cols = c(1:11) 
+new_train[,cols] = apply(new_train[,cols], 2, function(x) as.numeric(as.character(x)))
+
+#valid
+new_valid <- as.data.frame(t(as.matrix(valid)))
+new_valid <- new_valid[-c(1:3),]
+
+validation <- validation-3
+new_valid$age <- ages[validation, "Age"]
+
+new_valid[,cols] = apply(new_valid[,cols], 2, function(x) as.numeric(as.character(x)))
+```
+
+### Тестирую функцию
+```{r}
+errors.defaults <- wrapper(new_train, new_train$age, new_valid, new_valid$age, 50)
+errors.defaults
+
+errors.defaults2 <- wrapper(new_train, new_train$age, new_valid, new_valid$age, 50, ntree=1)
+errors.defaults2
+
+
+errors.overfit <- wrapper(new_train, new_train$age, new_valid, new_valid$age, 50,
+                          nodesize=1, replace=F, sampsize=40, mtry=10, ntree=100)
+print(errors.overfit)
+```
+
+### NTREE
+```{r}
+ntree_values <- seq(1, 500, 5)
+results <- data.frame()
+
+for(el in ntree_values){
+  results <- rbind(results, wrapper(new_train, new_train$age, new_valid, new_valid$age, 50, ntree=el))
+}
+colnames(results) <- c("Train", "Validation")
+results$ntree <- ntree_values
+
+toPlot <- rbind(
+    data.frame(ntree=results[, "ntree"], RMSE=results[, "Train"], dataset="Train"),
+    data.frame(ntree=results[, "ntree"], RMSE=results[, "Validation"], dataset="Validation")
+  )
+
+ggplot(data=toPlot, aes(x=ntree, y=RMSE, color=dataset)) +
+    geom_point(size=3) +
+    geom_line(size=2) + ggtitle("RMSE Plot") +
+    theme_bw()
+```
+
+## Больше 100 уже точно нет смысла
+
+### REPLACE=F and SAMPSIZE
+```{r}
+sampsize <- 1:40
+results <- data.frame()
+
+for(el in sampsize){
+  results <- rbind(results, wrapper(new_train, new_train$age, new_valid, new_valid$age, 50, ntree=100, mtry=10,
+                                    nodesize=1, sampsize=el, replace=F))
+}
+colnames(results) <- c("Train", "Validation")
+results$sampsize <- sampsize
+
+toPlot <- rbind(
+    data.frame(sampsize=results[, "sampsize"], RMSE=results[, "Train"], dataset="Train"),
+    data.frame(sampsize=results[, "sampsize"], RMSE=results[, "Validation"], dataset="Validation")
+  )
+
+ggplot(data=toPlot, aes(x=sampsize, y=RMSE, color=dataset)) +
+    geom_point(size=3) +
+    geom_line(size=2) + ggtitle("RMSE Plot, replace=F") +
+    theme_bw()
+```
+
+### REPLACE=T and SAMPSIZE
+```{r}
+sampsize <- 1:40
+results <- data.frame()
+
+for(el in sampsize){
+  results <- rbind(results, wrapper(new_train, new_train$age, new_valid, new_valid$age, 50, ntree=100, mtry=10,
+                                    nodesize=1, sampsize=el, replace=T))
+}
+colnames(results) <- c("Train", "Validation")
+results$sampsize <- sampsize
+
+toPlot <- rbind(
+    data.frame(sampsize=results[, "sampsize"], RMSE=results[, "Train"], dataset="Train"),
+    data.frame(sampsize=results[, "sampsize"], RMSE=results[, "Validation"], dataset="Validation")
+  )
+
+ggplot(data=toPlot, aes(x=sampsize, y=RMSE, color=dataset)) +
+    geom_point(size=3) +
+    geom_line(size=2) + ggtitle("RMSE Plot, replace=T") +
+    theme_bw()
+```
+
+## Переобучается сильнее модель с replace=F - там уже в 0 выходит ошибка при sampsize 40. И на валидирующей выборке под конец ошибка начинает расти.
+## Фиксируемые значения: replace=T, sampsize = 2
+
+### NODESIZE
+```{r}
+nodesize <- 1:40
+results <- data.frame()
+
+for(el in nodesize){
+  results <- rbind(results, wrapper(new_train, new_train$age, new_valid, new_valid$age, 50, ntree=100, mtry=10,
+                                    sampsize=2, replace=T, nodesize=el))
+}
+colnames(results) <- c("Train", "Validation")
+results$nodesize <- nodesize
+
+toPlot <- rbind(
+    data.frame(nodesize=results[, "nodesize"], RMSE=results[, "Train"], dataset="Train"),
+    data.frame(nodesize=results[, "nodesize"], RMSE=results[, "Validation"], dataset="Validation")
+  )
+
+ggplot(data=toPlot, aes(x=nodesize, y=RMSE, color=dataset)) +
+    geom_point(size=3) +
+    geom_line(size=2) + ggtitle("RMSE Plot") +
+    theme_bw()
+```
+
+## Заметного переобучения не наблюдается
+## Оптимальное значение nodesize: 6
+
+### MTRY
+```{r}
+mtry <- 1:10
+results <- data.frame()
+
+for(el in mtry){
+  results <- rbind(results, wrapper(new_train, new_train$age, new_valid, new_valid$age, 50, ntree=100, 
+                                    sampsize=2, replace=T, nodesize=6, mtry=el))
+}
+colnames(results) <- c("Train", "Validation")
+results$mtry <- mtry
+
+toPlot <- rbind(
+    data.frame(mtry=results[, "mtry"], RMSE=results[, "Train"], dataset="Train"),
+    data.frame(mtry=results[, "mtry"], RMSE=results[, "Validation"], dataset="Validation")
+  )
+
+ggplot(data=toPlot, aes(x=mtry, y=RMSE, color=dataset)) +
+    geom_point(size=3) +
+    geom_line(size=2) + ggtitle("RMSE Plot") +
+    theme_bw()
+```
+
+## Переобучения нет
+## Оптимальное значение MTRY: 2
+
+### CROSS-VALIDATION
+```{r}
+new_top10_methylation <- as.data.frame(t(as.matrix(top10_methylation)))
+new_top10_methylation <- new_top10_methylation[-c(1:3),]
+
+new_top10_methylation$age <- ages[, "Age"]
+
+cols = c(1:11) 
+new_top10_methylation[,cols] = apply(new_top10_methylation[,cols], 2, function(x) as.numeric(as.character(x)))
+
+response <- new_top10_methylation$age
+head(response)
+set.seed(1)
+
+# splitting our dataset into 5 equal parts
+cross.validation <- matrix(sample(1:50, 50), nrow=5, ncol=10)
+cross.validation
+
+
+cross.results <- apply(cross.validation, 1, function(test.sample){
+  # using each part as testing dataset
+  # using rest of the dataset as training dataset
+  test.sample <- cross.validation[1,]
+  
+  train.sample <- (1:50)[-test.sample]
+  train.data <- new_top10_methylation[train.sample, ]
+  train.response <- response[train.sample]
+  test.data <- new_top10_methylation[test.sample, ]
+  test.response <- response[test.sample]
+
+  # calculating RMSE for every part and default random forest
+  return(wrapper(train.data, train.response, test.data, test.response, 100,
+                 ntree=100, sampsize=2, replace=T, nodesize=6, mtry=2))
+})
+
+print(cross.results)
+print(rowMeans(cross.results))
+```
+
